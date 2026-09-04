@@ -184,6 +184,7 @@ label{display:block;text-align:left;font-weight:700;margin:10px 0}label select{m
 .confirm-box h3{margin:0 0 10px;font-size:21px}.confirm-box p{margin:0 0 18px;color:#bbb;line-height:1.5;word-break:break-all}.confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.confirm-actions button{width:100%;margin:0}.confirm-actions .no-btn{background:#222!important;color:#fff!important}
 @media(max-width:560px){#keyPanel.admin-open .admin-tabs{display:grid;grid-template-columns:1fr 1fr}.deactivate-card{padding:18px}.confirm-actions{grid-template-columns:1fr}}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 <canvas id="game"></canvas>
@@ -405,8 +406,7 @@ function unlock(){
     $('keyMsg').textContent='Неверный ключ. Проверь ввод.';
   }
 }
-$('keyEnter').onclick=unlock;
-$('keyInput').addEventListener('keydown',e=>{if(e.key==='Enter')unlock()});
+// Key button/Enter handling is replaced by the Supabase key handler below.
 
 function choose(d){device=d;localStorage.zDevice=d;$('device').classList.add('hidden');$('menu').classList.remove('hidden');$('cross').classList.toggle('hidden',d==='phone')}
 if(localStorage.zorvixUnlocked==='1'){
@@ -559,415 +559,230 @@ c.addEventListener('touchstart',e=>{e.preventDefault();let q=e.changedTouches[0]
 
 <script>
 (() => {
-  // Пароль хранится здесь только для локального демо.
-  // Для реального проекта проверку пароля и список ключей следует вынести на сервер.
-  const ADMIN_PASS = 'Semen2015';
-  const STORE = 'zorvixCustomKeys';
-  const HISTORY = 'zorvixGeneratedKeyHistory';
+  // Supabase connection. Publishable/anon key is safe to use in browser code.
+  const SUPABASE_URL = 'https://macrxfhfaapjzktlggsu.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_yUcJaYa5lCbYz4eAoMubVA_ByOc_lfr';
+  const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+  // Admin password remains in the page for now, exactly as in the previous demo.
+  const ADMIN_PASS = 'Semen2015';
   const $ = id => document.getElementById(id);
 
-  function loadKeys() {
-    try { return JSON.parse(localStorage.getItem(STORE) || '{}'); }
-    catch { return {}; }
-  }
-
-  function saveKeys(keys) {
-    localStorage.setItem(STORE, JSON.stringify(keys));
-  }
-
-  function loadHistory() {
-    try { return JSON.parse(localStorage.getItem(HISTORY) || '[]'); }
-    catch { return []; }
-  }
-
-  function saveHistory(history) {
-    localStorage.setItem(HISTORY, JSON.stringify(history));
-  }
-
-  function fmtKeyDate(v) {
+  const norm = v => (v || '').trim().toLowerCase();
+  const durationMs = value => ({
+    '1h': 60*60*1000,
+    '1d': 24*60*60*1000,
+    '7d': 7*24*60*60*1000,
+    '14d': 14*24*60*60*1000,
+    '30d': 30*24*60*60*1000,
+    '35d': 35*24*60*60*1000,
+    'forever': null
+  }[value]);
+  const durationLabel = value => ({
+    '1h':'1 час','1d':'1 день','7d':'7 дней','14d':'14 дней','30d':'30 дней','35d':'35 дней','forever':'Навсегда'
+  }[value] || value);
+  const fmtDate = v => {
     if (v === null || v === undefined) return 'Бессрочно';
     const d = new Date(v);
     if (Number.isNaN(d.getTime())) return '—';
-    return d.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
-  }
+    return d.toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});
+  };
 
-  function renderMyKeys() {
-    const box = $('myKeysList');
-    if (!box) return;
-    const keys = loadKeys();
-    const activeKey = (localStorage.getItem('zorvixActiveKey') || '').trim().toLowerCase();
-    const activated = [];
-
-    Object.entries(keys).forEach(([key, item]) => {
-      if (item && item.activatedAt && !item.deactivatedAt) {
-        activated.push([key.toLowerCase(), item]);
-      }
-    });
-
-    // Гарантируем, что текущий активный ключ попадёт в список.
-    if (activeKey && keys[activeKey] && !keys[activeKey].deactivatedAt) {
-      if (!keys[activeKey].activatedAt) {
-        keys[activeKey].activatedAt = Date.now();
-        saveKeys(keys);
-      }
-      if (!activated.some(([key]) => key === activeKey)) {
-        activated.push([activeKey, keys[activeKey]]);
-      }
-    }
-
-    if (!activated.length) {
-      box.innerHTML = '<div class="my-key-empty">Вы ещё не активировали ни одного ключа.</div>';
-      return;
-    }
-
-    activated.sort((a,b) => (b[1].activatedAt || 0) - (a[1].activatedAt || 0));
-    box.innerHTML = activated.map(([key,item]) => {
-      const expired = item.expires !== null && item.expires !== undefined && Date.now() >= item.expires;
-      const status = expired ? 'Истёк' : 'Активен';
-      return `<div class="my-key-card"><div class="my-key-value">${key}</div><div class="my-key-info"><span>Тариф: <b>${item.plan || '—'}</b></span><span>Заканчивается: <b>${item.expires === null ? 'Бессрочно' : fmtKeyDate(item.expires)}</b></span><span>Статус: <b>${status}</b></span></div></div>`;
-    }).join('');
-  }
-
-  document.querySelectorAll('[data-tab="mykeys"]').forEach(t => t.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    $('gameTab').classList.add('hidden');
-    $('soundTab').classList.add('hidden');
-    $('flashTab').classList.add('hidden');
-    $('mykeysTab').classList.remove('hidden');
-    renderMyKeys();
-  }));
-
-  function durationMs(value) {
-    const map = {
-      '1h': 60 * 60 * 1000,
-      '1d': 24 * 60 * 60 * 1000,
-      '7d': 7 * 24 * 60 * 60 * 1000,
-      '14d': 14 * 24 * 60 * 60 * 1000,
-      '30d': 30 * 24 * 60 * 60 * 1000,
-      '35d': 35 * 24 * 60 * 60 * 1000,
-      'forever': null
-    };
-    return map[value];
-  }
-
-  function durationLabel(value) {
-    const map = {
-      '1h': '1 час',
-      '1d': '1 день',
-      '7d': '7 дней',
-      '14d': '14 дней',
-      '30d': '30 дней',
-      '35d': '35 дней',
-      'forever': 'Навсегда'
-    };
-    return map[value] || value;
-  }
-
-  function keyStatus(item) {
-    if (!item) return null;
-    return {
-      plan: item.plan || 'Неизвестный тариф',
-      until: item.expires === null ? 'forever' : item.expires
-    };
-  }
-
-  function randomChars(length = 10) {
-    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    const data = new Uint32Array(length);
+  function randomChars(length=10){
+    const alphabet='abcdefghijklmnopqrstuvwxyz0123456789';
+    const data=new Uint32Array(length);
     crypto.getRandomValues(data);
-    return [...data].map(n => alphabet[n % alphabet.length]).join('');
+    return [...data].map(n=>alphabet[n%alphabet.length]).join('');
   }
 
-  function generateUniqueKey() {
-    const keys = loadKeys();
-    const history = loadHistory();
-
-    // Формат: zorvix-xxxx-xxxx-xx
-    // Проверяем текущие ключи и всю историю генераций.
-    let key;
-    do {
-      const raw = randomChars(10);
-      key = `zorvix-${raw.slice(0,4)}-${raw.slice(4,8)}-${raw.slice(8,10)}`;
-    } while (keys[key] || history.includes(key));
-
-    return key;
-  }
-
-  function getValidKey(key) {
-    const keys = loadKeys();
-    const normalized = key.toLowerCase();
-    const item = keys[normalized];
-    if (!item) return null;
-
-    if (item.deactivatedAt) {
-      $('keyMsg').textContent = 'Этот ключ деактивирован администратором.';
-      return null;
+  async function generateUniqueKey(){
+    for(let i=0;i<20;i++){
+      const raw=randomChars(10);
+      const key=`zorvix-${raw.slice(0,4)}-${raw.slice(4,8)}-${raw.slice(8,10)}`;
+      const {data,error}=await db.from('keys').select('key').eq('key',key).maybeSingle();
+      if(error) throw error;
+      if(!data) return key;
     }
+    throw new Error('Не удалось создать уникальный ключ.');
+  }
 
-    if (item.expires !== null && Date.now() >= item.expires) {
-      delete keys[normalized];
-      saveKeys(keys);
-      $('keyMsg').textContent = 'Ваш ключ закончился. Купите новый ключ.';
-      return null;
+  async function getKey(key){
+    const k=norm(key);
+    if(!k) return null;
+    const {data,error}=await db.from('keys').select('*').eq('key',k).maybeSingle();
+    if(error) throw error;
+    if(!data) return null;
+    return data;
+  }
+
+  function isExpired(item){
+    return item.expires_at && Date.now() >= new Date(item.expires_at).getTime();
+  }
+
+  async function activateKey(){
+    const input=($('keyInput').value||'').trim().toLowerCase();
+    if(!input){ $('keyMsg').textContent='Введите ключ.'; return; }
+    $('keyEnter').disabled=true;
+    $('keyMsg').textContent='Проверяем ключ...';
+    try{
+      const item=await getKey(input);
+      if(!item){
+        $('keyMsg').textContent='Неверный ключ. Проверь ввод.';
+        return;
+      }
+      if(item.status==='deactivated'){
+        $('keyMsg').textContent='Этот ключ деактивирован администратором.';
+        return;
+      }
+      if(isExpired(item)){
+        $('keyMsg').textContent='Ваш ключ закончился. Купите новый ключ.';
+        return;
+      }
+      const now=new Date().toISOString();
+      const {error}=await db.from('keys').update({status:'active',activated_at:item.activated_at||now,activated_by:input}).eq('id',item.id);
+      if(error) throw error;
+      localStorage.setItem('zorvixUnlocked','1');
+      localStorage.setItem('zorvixActiveKey',input);
+      $('keyPanel').classList.add('hidden');
+      $('device').classList.remove('hidden');
+      $('keyMsg').textContent='';
+      window.dispatchEvent(new CustomEvent('keyActivated',{detail:{plan:item.plan||'Неизвестный тариф',until:item.expires_at||null}}));
+      if(typeof device!=='undefined' && device) choose(device);
+      await renderMyKeys();
+    }catch(err){
+      console.error(err);
+      $('keyMsg').textContent='Ошибка подключения к базе. Попробуй ещё раз.';
+    }finally{
+      $('keyEnter').disabled=false;
     }
-
-    return { key: normalized, item };
   }
 
-  function customKeyValid(key) {
-    return !!getValidKey(key);
-  }
-
-  // Проверка уже активированного ключа при открытии страницы.
-  function checkActiveKey() {
-    const active = localStorage.getItem('zorvixActiveKey');
-    if (!active) return true;
-
-    const found = getValidKey(active);
-    if (found) return true;
-
+  async function checkActiveKey(){
+    const active=localStorage.getItem('zorvixActiveKey');
+    if(!active) return false;
+    try{
+      const item=await getKey(active);
+      if(item && item.status!=='deactivated' && !isExpired(item)) return true;
+    }catch(err){ console.error(err); return true; }
     localStorage.removeItem('zorvixUnlocked');
     localStorage.removeItem('zorvixActiveKey');
     $('keyPanel').classList.remove('hidden');
     $('device').classList.add('hidden');
     $('menu').classList.add('hidden');
-    $('keyMsg').textContent = 'Срок действия тарифа истёк. Введите новый ключ.';
+    $('keyMsg').textContent='Срок действия ключа истёк или ключ деактивирован.';
     return false;
   }
 
-  setInterval(checkActiveKey, 15000);
-
-  // Получить ключ — открыть страницу покупки/получения в Telegram.
-  $('getKey')?.addEventListener('click', () => {
-    window.open('https://t.me/D0NTYYY_CHEAT', '_blank', 'noopener,noreferrer');
-  });
-
-  // Открыть меню генератора.
-  function openAdminMenu() {
-    $('keyMainActions').classList.add('hidden');
-    $('zxKeyManager').classList.add('open'); $('keyPanel').classList.add('admin-open');
-    $('zxPasswordView').classList.remove('hidden');
-    $('zxGenerator').classList.add('hidden');
-    $('zxAdminPass').value = '';
-    $('zxGeneratedKey').classList.add('hidden');
-    $('zxCopyKey').classList.add('hidden');
-    $('zxKeyMsg').textContent = '';
-    $('zxKeyMsg2').textContent = '';
-    document.querySelectorAll('[data-admin-tab]').forEach(x=>x.classList.remove('active'));
-    document.querySelector('[data-admin-tab=generator]')?.classList.add('active');
-    $('adminGeneratorTab').classList.remove('hidden'); $('adminStatsTab').classList.add('hidden'); $('adminDeactivateTab').classList.add('hidden');
-    $('zxAdminPass').focus();
+  async function renderMyKeys(){
+    const box=$('myKeysList');
+    if(!box) return;
+    const active=localStorage.getItem('zorvixActiveKey');
+    if(!active){ box.innerHTML='<div class="my-key-empty">Вы ещё не активировали ни одного ключа.</div>'; return; }
+    try{
+      const item=await getKey(active);
+      if(!item){ box.innerHTML='<div class="my-key-empty">Ключ не найден.</div>'; return; }
+      const expired=isExpired(item);
+      const status=item.status==='deactivated'?'Деактивирован':(expired?'Истёк':'Активен');
+      box.innerHTML=`<div class="my-key-card"><div class="my-key-value">${active}</div><div class="my-key-info"><span>Тариф: <b>${item.plan||'—'}</b></span><span>Заканчивается: <b>${item.expires_at?fmtDate(item.expires_at):'Бессрочно'}</b></span><span>Статус: <b>${status}</b></span></div></div>`;
+    }catch(err){
+      console.error(err); box.innerHTML='<div class="my-key-empty">Не удалось загрузить ключ.</div>';
+    }
   }
 
-  $('addKey')?.addEventListener('click', openAdminMenu);
-
-  document.querySelectorAll('[data-admin-tab]').forEach(t=>t.addEventListener('click',()=>{
-    document.querySelectorAll('[data-admin-tab]').forEach(x=>x.classList.remove('active'));
-    t.classList.add('active');
-    $('adminGeneratorTab').classList.toggle('hidden',t.dataset.adminTab!=='generator');
-    $('adminStatsTab').classList.toggle('hidden',t.dataset.adminTab!=='stats');
-    $('adminDeactivateTab').classList.toggle('hidden',t.dataset.adminTab!=='deactivate');
-    if(t.dataset.adminTab==='stats') renderStats();
-    if(t.dataset.adminTab==='deactivate') { $('deactivateMsg').textContent=''; $('deactivateKeyInput').focus(); }
+  document.querySelectorAll('[data-tab="mykeys"]').forEach(t=>t.addEventListener('click',async()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
+    $('gameTab').classList.add('hidden'); $('soundTab').classList.add('hidden'); $('flashTab').classList.add('hidden'); $('mykeysTab').classList.remove('hidden');
+    await renderMyKeys();
   }));
 
-  function fmtDate(v){ return new Date(v).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'}); }
-  $('statsSearch')?.addEventListener('input', renderStats);
-  $('statsFilter')?.addEventListener('change', renderStats);
-  function renderStats(){
-    const keys=loadKeys(), rows=Object.entries(keys);
-    let active=0, unused=0, expiredCount=0;
-    rows.forEach(([key,item])=>{
-      const isExpired=item.expires!==null && Date.now()>=item.expires;
-      if(item.activatedAt && !isExpired && !item.deactivatedAt) active++;
-      if(!item.activatedAt && !isExpired && !item.deactivatedAt) unused++;
-      if(isExpired) expiredCount++;
+  $('getKey')?.addEventListener('click',()=>window.open('https://t.me/D0NTYYY_CHEAT','_blank','noopener,noreferrer'));
+
+  function openAdminMenu(){
+    $('keyMainActions').classList.add('hidden'); $('zxKeyManager').classList.add('open'); $('keyPanel').classList.add('admin-open');
+    $('zxPasswordView').classList.remove('hidden'); $('zxGenerator').classList.add('hidden'); $('zxAdminPass').value=''; $('zxGeneratedKey').classList.add('hidden'); $('zxCopyKey').classList.add('hidden'); $('zxKeyMsg').textContent=''; $('zxKeyMsg2').textContent='';
+    document.querySelectorAll('[data-admin-tab]').forEach(x=>x.classList.remove('active')); document.querySelector('[data-admin-tab=generator]')?.classList.add('active');
+    $('adminGeneratorTab').classList.remove('hidden'); $('adminStatsTab').classList.add('hidden'); $('adminDeactivateTab').classList.add('hidden'); $('zxAdminPass').focus();
+  }
+  $('addKey')?.addEventListener('click',openAdminMenu);
+
+  document.querySelectorAll('[data-admin-tab]').forEach(t=>t.addEventListener('click',()=>{
+    document.querySelectorAll('[data-admin-tab]').forEach(x=>x.classList.remove('active')); t.classList.add('active');
+    $('adminGeneratorTab').classList.toggle('hidden',t.dataset.adminTab!=='generator'); $('adminStatsTab').classList.toggle('hidden',t.dataset.adminTab!=='stats'); $('adminDeactivateTab').classList.toggle('hidden',t.dataset.adminTab!=='deactivate');
+    if(t.dataset.adminTab==='stats') renderStats();
+    if(t.dataset.adminTab==='deactivate'){ $('deactivateMsg').textContent=''; $('deactivateKeyInput').focus(); }
+  }));
+
+  async function renderStats(){
+    const {data,error}=await db.from('keys').select('*').order('created_at',{ascending:false});
+    if(error){ console.error(error); $('statsBody').innerHTML='<tr><td colspan="6" class="stats-empty">Ошибка загрузки</td></tr>'; return; }
+    const rows=data||[]; let active=0,unused=0,expiredCount=0;
+    rows.forEach(item=>{ const expired=isExpired(item); if(item.status==='deactivated'){} else if(expired) expiredCount++; else if(item.activated_at) active++; else unused++; });
+    $('statTotal').textContent=rows.length; $('statActive').textContent=active; $('statUnused').textContent=unused; $('statExpired').textContent=expiredCount;
+    const query=($('statsSearch')?.value||'').trim().toLowerCase(); const filter=$('statsFilter')?.value||'all';
+    const filtered=rows.filter(item=>{
+      const expired=isExpired(item), activated=!!item.activated_at, deactivated=item.status==='deactivated';
+      const matchesKey=!query || item.key.toLowerCase().includes(query);
+      const matchesFilter=filter==='all' || (filter==='active'&&activated&&!expired&&!deactivated) || (filter==='unused'&&!activated&&!expired&&!deactivated) || (filter==='expired'&&expired);
+      return matchesKey&&matchesFilter;
     });
-    $('statTotal').textContent=rows.length;
-    $('statActive').textContent=active;
-    $('statUnused').textContent=unused;
-    $('statExpired').textContent=expiredCount;
-
-    const query=($('statsSearch')?.value||'').trim().toLowerCase();
-    const filter=$('statsFilter')?.value||'all';
-    const filtered=rows.filter(([key,item])=>{
-      const expired=item.expires!==null && Date.now()>=item.expires;
-      const activated=!!item.activatedAt;
-      const deactivated=!!item.deactivatedAt;
-      const matchesKey=!query || key.toLowerCase().includes(query);
-      const matchesFilter=filter==='all' || (filter==='active' && activated && !expired && !deactivated) || (filter==='unused' && !activated && !expired && !deactivated) || (filter==='expired' && expired);
-      return matchesKey && matchesFilter;
-    }).sort((a,b)=>(b[1].created||0)-(a[1].created||0));
-
     let html='';
-    filtered.forEach(([key,item])=>{
-      const activated=!!item.activatedAt;
-      const expired=item.expires!==null && Date.now()>=item.expires;
-      const status=item.deactivatedAt?'Деактивирован':(expired?'Истёк':(activated?'Активен':'Ожидает активации'));
-      const activatedCell=activated
-        ? `<span class="status-pill yes"><i class="status-dot"></i>ДА</span>`
-        : `<span class="status-pill no"><i class="status-dot"></i>НЕТ</span>`;
-      const statusCell=item.deactivatedAt
-        ? `<span class="status-pill no"><i class="status-dot"></i>Деактивирован</span>`
-        : (expired ? `<span class="status-pill expired"><i class="status-dot"></i>Истёк</span>` : `<span class="status-pill yes"><i class="status-dot"></i>${status}</span>`);
-      const expires=item.expires===null?'Навсегда':(item.expires?fmtDate(item.expires):'—');
-      html+=`<tr><td>${key}</td><td>${item.plan||'—'}</td><td>${activatedCell}</td><td>${statusCell}</td><td>${item.created?fmtDate(item.created):'—'}</td><td>${expires}</td></tr>`;
+    filtered.forEach(item=>{
+      const expired=isExpired(item), activated=!!item.activated_at;
+      const status=item.status==='deactivated'?'Деактивирован':(expired?'Истёк':(activated?'Активен':'Ожидает активации'));
+      const activatedCell=activated?'<span class="status-pill yes"><i class="status-dot"></i>ДА</span>':'<span class="status-pill no"><i class="status-dot"></i>НЕТ</span>';
+      const statusCell=item.status==='deactivated'?'<span class="status-pill no"><i class="status-dot"></i>Деактивирован</span>':(expired?'<span class="status-pill expired"><i class="status-dot"></i>Истёк</span>':`<span class="status-pill yes"><i class="status-dot"></i>${status}</span>`);
+      html+=`<tr><td>${item.key}</td><td>${item.plan||'—'}</td><td>${activatedCell}</td><td>${statusCell}</td><td>${item.created_at?fmtDate(item.created_at):'—'}</td><td>${item.expires_at?fmtDate(item.expires_at):'Навсегда'}</td></tr>`;
     });
     $('statsBody').innerHTML=html||'<tr><td colspan="6" class="stats-empty">По выбранному фильтру ключей нет</td></tr>';
   }
+  $('statsSearch')?.addEventListener('input',renderStats); $('statsFilter')?.addEventListener('change',renderStats);
 
-  // Деактивация ключа с обязательным подтверждением.
-  let pendingDeactivateKey = '';
-  function closeDeactivateConfirm(){
-    pendingDeactivateKey='';
-    $('deactivateConfirm').classList.remove('show');
-    $('deactivateConfirm').setAttribute('aria-hidden','true');
-  }
-  $('requestDeactivate')?.addEventListener('click', () => {
-    const key=($('deactivateKeyInput').value||'').trim().toLowerCase();
-    if(!key){ $('deactivateMsg').textContent='Введите ключ для деактивации.'; return; }
-    const keys=loadKeys();
-    if(!keys[key]){ $('deactivateMsg').textContent='Такой ключ не найден.'; return; }
-    if(keys[key].deactivatedAt){ $('deactivateMsg').textContent='Этот ключ уже деактивирован.'; return; }
-    pendingDeactivateKey=key;
-    $('deactivateConfirmText').textContent=`Ключ ${key} перестанет работать. Вы точно хотите его деактивировать?`;
-    $('deactivateConfirm').classList.add('show');
-    $('deactivateConfirm').setAttribute('aria-hidden','false');
+  let pendingDeactivateKey='';
+  function closeDeactivateConfirm(){ pendingDeactivateKey=''; $('deactivateConfirm').classList.remove('show'); $('deactivateConfirm').setAttribute('aria-hidden','true'); }
+  $('requestDeactivate')?.addEventListener('click',async()=>{
+    const key=norm($('deactivateKeyInput').value); if(!key){$('deactivateMsg').textContent='Введите ключ для деактивации.';return;}
+    try{ const item=await getKey(key); if(!item){$('deactivateMsg').textContent='Такой ключ не найден.';return;} if(item.status==='deactivated'){$('deactivateMsg').textContent='Этот ключ уже деактивирован.';return;}
+      pendingDeactivateKey=key; $('deactivateConfirmText').textContent=`Ключ ${key} перестанет работать. Вы точно хотите его деактивировать?`; $('deactivateConfirm').classList.add('show'); $('deactivateConfirm').setAttribute('aria-hidden','false');
+    }catch(err){console.error(err);$('deactivateMsg').textContent='Ошибка подключения к базе.';}
   });
-  $('confirmDeactivateNo')?.addEventListener('click', closeDeactivateConfirm);
-  $('deactivateConfirm')?.addEventListener('click', e=>{ if(e.target===$('deactivateConfirm')) closeDeactivateConfirm(); });
-  $('confirmDeactivateYes')?.addEventListener('click', () => {
-    if(!pendingDeactivateKey) return closeDeactivateConfirm();
-    const keys=loadKeys(), item=keys[pendingDeactivateKey];
-    if(!item){ closeDeactivateConfirm(); $('deactivateMsg').textContent='Ключ больше не найден.'; return; }
-    item.deactivatedAt=Date.now();
-    keys[pendingDeactivateKey]=item;
-    saveKeys(keys);
-    const active=localStorage.getItem('zorvixActiveKey');
-    if(active===pendingDeactivateKey){
-      localStorage.removeItem('zorvixUnlocked');
-      localStorage.removeItem('zorvixActiveKey');
-      $('keyPanel').classList.remove('hidden');
-      $('device').classList.add('hidden'); $('menu').classList.add('hidden');
-      $('keyMsg').textContent='Ваш ключ был деактивирован администратором.';
-    }
-    $('deactivateKeyInput').value='';
-    $('deactivateMsg').textContent='Готово: ключ деактивирован и больше не работает.';
-    closeDeactivateConfirm();
-    renderStats();
+  $('confirmDeactivateNo')?.addEventListener('click',closeDeactivateConfirm); $('deactivateConfirm')?.addEventListener('click',e=>{if(e.target===$('deactivateConfirm'))closeDeactivateConfirm();});
+  $('confirmDeactivateYes')?.addEventListener('click',async()=>{
+    if(!pendingDeactivateKey)return closeDeactivateConfirm();
+    try{ const {error}=await db.from('keys').update({status:'deactivated'}).eq('key',pendingDeactivateKey); if(error)throw error;
+      const active=norm(localStorage.getItem('zorvixActiveKey')); if(active===pendingDeactivateKey){localStorage.removeItem('zorvixUnlocked');localStorage.removeItem('zorvixActiveKey');$('keyPanel').classList.remove('hidden');$('device').classList.add('hidden');$('menu').classList.add('hidden');$('keyMsg').textContent='Ваш ключ был деактивирован администратором.';}
+      $('deactivateKeyInput').value='';$('deactivateMsg').textContent='Готово: ключ деактивирован и больше не работает.';closeDeactivateConfirm();renderStats();
+    }catch(err){console.error(err);$('deactivateMsg').textContent='Не удалось деактивировать ключ.';closeDeactivateConfirm();}
   });
-  $('deactivateKeyInput')?.addEventListener('keydown', e=>{ if(e.key==='Enter') $('requestDeactivate').click(); });
+  $('deactivateKeyInput')?.addEventListener('keydown',e=>{if(e.key==='Enter')$('requestDeactivate').click();});
 
-  // Разблокировать генератор после пароля.
-  $('zxUnlockGenerator')?.addEventListener('click', () => {
-    if ($('zxAdminPass').value !== ADMIN_PASS) {
-      $('zxKeyMsg').textContent = 'Неверный пароль.';
-      return;
-    }
-    $('zxPasswordView').classList.add('hidden');
-    $('zxGenerator').classList.remove('hidden');
-    $('zxAdminPass').value = '';
-    $('zxKeyMsg2').textContent = '';
+  $('zxUnlockGenerator')?.addEventListener('click',()=>{
+    if($('zxAdminPass').value!==ADMIN_PASS){$('zxKeyMsg').textContent='Неверный пароль.';return;}
+    $('zxPasswordView').classList.add('hidden');$('zxGenerator').classList.remove('hidden');$('zxAdminPass').value='';$('zxKeyMsg2').textContent='';
   });
+  $('zxAdminPass')?.addEventListener('keydown',e=>{if(e.key==='Enter')$('zxUnlockGenerator')?.click();});
 
-  $('zxAdminPass')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') $('zxUnlockGenerator')?.click();
+  $('zxGenerateKey')?.addEventListener('click',async()=>{
+    const selectedDuration=$('zxKeyDuration').value, ms=durationMs(selectedDuration), now=new Date();
+    $('zxGenerateKey').disabled=true; $('zxKeyMsg2').textContent='Создаём ключ...';
+    try{
+      const key=await generateUniqueKey();
+      const row={key,status:'active',created_at:now.toISOString(),activated_at:null,activated_by:null,plan:durationLabel(selectedDuration),expires_at:ms===null?null:new Date(Date.now()+ms).toISOString()};
+      const {error}=await db.from('keys').insert(row); if(error)throw error;
+      $('zxGeneratedKey').textContent=key;$('zxGeneratedKey').classList.remove('hidden');$('zxCopyKey').classList.remove('hidden');$('zxKeyMsg2').textContent='Уникальный ключ создан и сохранён в Supabase.';
+    }catch(err){console.error(err);$('zxKeyMsg2').textContent='Не удалось создать ключ: '+(err.message||'ошибка');}
+    finally{$('zxGenerateKey').disabled=false;}
   });
+  $('zxCopyKey')?.addEventListener('click',async()=>{const key=$('zxGeneratedKey').textContent;if(!key)return;try{await navigator.clipboard.writeText(key);$('zxKeyMsg2').textContent='Ключ скопирован.';}catch{$('zxKeyMsg2').textContent='Выделите ключ вручную для копирования.';}});
 
-  // Генерация и бессрочное сохранение истории ключей.
-  $('zxGenerateKey')?.addEventListener('click', () => {
-    const key = generateUniqueKey();
-    const selectedDuration = $('zxKeyDuration').value;
-    const ms = durationMs(selectedDuration);
-    const now = Date.now();
+  $('zxCloseKey')?.addEventListener('click',()=>{$('zxKeyManager').classList.remove('open');$('keyPanel').classList.remove('admin-open');$('keyMainActions').classList.remove('hidden');$('zxPasswordView').classList.remove('hidden');$('zxGenerator').classList.add('hidden');$('zxGeneratedKey').classList.add('hidden');$('zxCopyKey').classList.add('hidden');$('zxKeyMsg').textContent='';$('zxKeyMsg2').textContent='';});
 
-    const keys = loadKeys();
-    keys[key] = {
-      created: now,
-      plan: durationLabel(selectedDuration),
-      duration: selectedDuration,
-      expires: ms === null ? null : now + ms
-    };
-    saveKeys(keys);
+  // Replace the old localStorage-only key check.
+  if($('keyEnter')) $('keyEnter').onclick=activateKey;
+  $('keyInput')?.addEventListener('keydown',e=>{if(e.key==='Enter')activateKey();});
 
-    const history = loadHistory();
-    history.push(key);
-    saveHistory(history);
-
-    $('zxGeneratedKey').textContent = key;
-    $('zxGeneratedKey').classList.remove('hidden');
-    $('zxCopyKey').classList.remove('hidden');
-    $('zxKeyMsg2').textContent =
-      selectedDuration === 'forever'
-        ? 'Уникальный ключ создан. Он сохранён в истории генераций.'
-        : 'Уникальный ключ создан и сохранён.';
-  });
-
-  $('zxCopyKey')?.addEventListener('click', async () => {
-    const key = $('zxGeneratedKey').textContent;
-    if (!key) return;
-    try {
-      await navigator.clipboard.writeText(key);
-      $('zxKeyMsg2').textContent = 'Ключ скопирован.';
-    } catch {
-      $('zxKeyMsg2').textContent = 'Выделите ключ вручную для копирования.';
-    }
-  });
-
-
-  $('zxCloseKey')?.addEventListener('click', () => {
-    $('zxKeyManager').classList.remove('open'); $('keyPanel').classList.remove('admin-open');
-    $('keyMainActions').classList.remove('hidden');
-    $('zxPasswordView').classList.remove('hidden');
-    $('zxGenerator').classList.add('hidden');
-    $('zxGeneratedKey').classList.add('hidden');
-    $('zxCopyKey').classList.add('hidden');
-    $('zxKeyMsg').textContent = '';
-    $('zxKeyMsg2').textContent = '';
-  });
-
-  // При входе принимает как демо-ключ, так и созданные ключи.
-  const originalEnter = $('keyEnter')?.onclick;
-  if ($('keyEnter')) {
-    $('keyEnter').onclick = function(ev) {
-      const key = ($('keyInput').value || '').trim().toUpperCase();
-
-      const found = getValidKey(key);
-      if (found) {
-        const allKeys=loadKeys();
-        allKeys[found.key].activatedAt=allKeys[found.key].activatedAt||Date.now();
-        saveKeys(allKeys);
-        localStorage.setItem('zorvixUnlocked', '1');
-        localStorage.setItem('zorvixActiveKey', found.key);
-
-        $('keyPanel').classList.add('hidden');
-        $('device').classList.remove('hidden');
-        $('keyMsg').textContent = '';
-
-        const until = found.item.expires === null ? 'forever' : found.item.expires;
-        window.dispatchEvent(new CustomEvent('keyActivated', {
-          detail: { plan: found.item.plan || 'Неизвестный тариф', until }
-        }));
-
-        if (device) choose(device);
-        return;
-      }
-
-      if (typeof originalEnter === 'function') {
-        $('keyInput').value = key;
-        originalEnter.call(this, ev);
-      }
-    };
-  }
-
-  $('keyInput')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') $('keyEnter')?.click();
-  });
-
-  // Не оставляем доступ после истечения тарифа.
+  // Validate the active key after page load and periodically.
   checkActiveKey();
+  setInterval(checkActiveKey,15000);
 })();
 </script>
 
